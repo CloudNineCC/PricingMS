@@ -48,8 +48,12 @@ gcloud compute ssh --ssh-key-file=${SSH_KEY_FILE} ${VM_NAME} \
     npm run build
 
     # Load environment variables and start with PM2
+    # NOTE: pm2 on the VM may not support --env-file; source .env instead.
     pm2 delete ${SERVICE_NAME} 2>/dev/null || true
-    pm2 start dist/server.js --name ${SERVICE_NAME} --env-file .env --update-env
+    set -a
+    . ./.env
+    set +a
+    pm2 start dist/server.js --name ${SERVICE_NAME} --update-env
     pm2 save
   "
 

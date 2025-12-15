@@ -527,6 +527,67 @@ function nightsBetween(start: string, end: string): number {
   return Math.max(0, Math.ceil((e.getTime() - s.getTime()) / (1000 * 60 * 60 * 24)))
 }
 
+function toSqlDate(value: string): string {
+  if (!value) return value
+  const match = value.match(/^(\d{4}-\d{2}-\d{2})/)
+  if (match) return match[1]
+  const date = new Date(value)
+  if (!Number.isNaN(date.getTime())) return date.toISOString().slice(0, 10)
+  return value
+}
+
+function toNumber(value: any, defaultValue = 0): number {
+  const coerced = Number(value)
+  return Number.isFinite(coerced) ? coerced : defaultValue
+}
+
+async function determineSeasonId(cityId: string, date: string): Promise<string | null> {
+  try {
+    const DESTINATIONS_MS_URL = process.env.DESTINATIONS_MS_URL || 'http://136.113.150.64:3001'
+    const response = await fetch(`${DESTINATIONS_MS_URL}/seasons`)
+
+    if (!response.ok) {
+      console.error('Failed to fetch seasons from DestinationsMS')
+      return null
+    }
+
+    const allSeasons = await response.json()
+
+    // Filter seasons for this city
+    const citySeasons = allSeasons.filter((s: any) => s.city_id === cityId)
+
+    if (citySeasons.length === 0) {
+      return null
+    }
+
+    // Extract month from date (1-12)
+    const month = new Date(date).getMonth() + 1
+
+    // Find matching season based on month range
+    for (const season of citySeasons) {
+      const { start_month, end_month } = season
+
+      // Handle normal range (e.g., June-August: 6-8)
+      if (start_month <= end_month) {
+        if (month >= start_month && month <= end_month) {
+          return season.id
+        }
+      }
+      // Handle wraparound (e.g., November-March: 11-3)
+      else {
+        if (month >= start_month || month <= end_month) {
+          return season.id
+        }
+      }
+    }
+
+    return null // No season found
+  } catch (error) {
+    console.error('Error determining season:', error)
+    return null
+  }
+}
+
 app.post('/quotes', async (req, res) => {
   const p = quoteRequestSchema.safeParse(req.body)
   if (!p.success) return res.status(400).json({ error: p.error.flatten() })
@@ -536,17 +597,62 @@ app.post('/quotes', async (req, res) => {
     const per_segment = await Promise.all(segments.map(async (seg) => {
       const nights = nightsBetween(seg.start_date, seg.end_date)
       const lodgingClassId = await getLodgingClassId(seg.lodging_class)
+      if (!lodgingClassId) {
+        throw new Error(`Invalid lodging_class: ${seg.lodging_class}`)
+      }
 
-      const [rates]: any = await pool.query(
-        'SELECT base_nightly_usd FROM rate_table WHERE city_id = ? AND lodging_class_id = ? LIMIT 1',
-        [seg.city_id, lodgingClassId]
-      )
+      // Determine season based on start_date
+      const seasonId = await determineSeasonId(seg.city_id, seg.start_date)
 
-      const base = rates.length > 0 ? rates[0].base_nightly_usd * nights : 0
-      return { segment: seg, nights, base_usd: base }
+      let baseNightly = 0
+      let actualSeasonId = seasonId
+
+      if (seasonId) {
+        // Try to get rate with season filter
+        const [rates]: any = await pool.query(
+          'SELECT base_nightly_usd, season_id FROM rate_table WHERE city_id = ? AND lodging_class_id = ? AND season_id = ? LIMIT 1',
+          [seg.city_id, lodgingClassId, seasonId]
+        )
+
+        if (rates.length > 0) {
+          baseNightly = toNumber(rates[0].base_nightly_usd, 0)
+          actualSeasonId = rates[0].season_id
+        } else {
+          // Fallback: query without season filter
+          const [fallbackRates]: any = await pool.query(
+            'SELECT base_nightly_usd, season_id FROM rate_table WHERE city_id = ? AND lodging_class_id = ? LIMIT 1',
+            [seg.city_id, lodgingClassId]
+          )
+          if (fallbackRates.length > 0) {
+            baseNightly = toNumber(fallbackRates[0].base_nightly_usd, 0)
+            actualSeasonId = fallbackRates[0].season_id
+          }
+        }
+      } else {
+        // No season found, query without season filter
+        const [rates]: any = await pool.query(
+          'SELECT base_nightly_usd, season_id FROM rate_table WHERE city_id = ? AND lodging_class_id = ? LIMIT 1',
+          [seg.city_id, lodgingClassId]
+        )
+        if (rates.length > 0) {
+          baseNightly = toNumber(rates[0].base_nightly_usd, 0)
+          actualSeasonId = rates[0].season_id
+        }
+      }
+
+      const base = baseNightly * nights
+
+      return {
+        segment: seg,
+        nights,
+        base_usd: base,
+        season_id: actualSeasonId,
+        base_nightly_usd: baseNightly,
+        lodging_class_id: lodgingClassId
+      }
     }))
 
-    let total_usd = per_segment.reduce((sum, s) => sum + s.base_usd, 0)
+    let total_usd = per_segment.reduce((sum, s) => sum + toNumber(s.base_usd, 0), 0)
 
     const [tf]: any = await pool.query('SELECT * FROM taxes_fees')
     const taxes_fees_applied: TaxFee[] = []
@@ -554,13 +660,15 @@ app.post('/quotes', async (req, res) => {
     for (const t of tf) {
       for (const ps of per_segment) {
         if (ps.segment.city_id === t.city_id) {
-          total_usd += (t.lodging_tax_percent || 0) / 100 * ps.base_usd
-          total_usd += t.fixed_fee_usd || 0
+          const lodgingTaxPercent = toNumber(t.lodging_tax_percent, 0)
+          const fixedFeeUsd = toNumber(t.fixed_fee_usd, 0)
+          total_usd += (lodgingTaxPercent / 100) * toNumber(ps.base_usd, 0)
+          total_usd += fixedFeeUsd
           taxes_fees_applied.push({
             id: t.id,
             city_id: t.city_id,
-            lodging_tax_pct: t.lodging_tax_percent,
-            fixed_fee_usd: t.fixed_fee_usd
+            lodging_tax_pct: lodgingTaxPercent,
+            fixed_fee_usd: fixedFeeUsd
           })
         }
       }
@@ -571,10 +679,11 @@ app.post('/quotes', async (req, res) => {
       const [promos]: any = await pool.query('SELECT * FROM promos WHERE code = ?', [promo_code])
       if (promos.length > 0) {
         promoUsed = promos[0]
+        const promoValue = toNumber(promoUsed.value, 0)
         if (promoUsed.type === 'percent') {
-          total_usd *= 1 - promoUsed.value / 100
+          total_usd *= 1 - promoValue / 100
         } else {
-          total_usd -= promoUsed.value
+          total_usd -= promoValue
         }
         if (total_usd < 0) total_usd = 0
       }
@@ -587,6 +696,28 @@ app.post('/quotes', async (req, res) => {
       'INSERT INTO quotes (id, total_usd, currency, promo_code) VALUES (?, ?, ?, ?)',
       [id, Number(total_usd.toFixed(2)), currency || 'USD', promo_code || null]
     )
+
+    // Store quote segments with season data
+    for (const ps of per_segment) {
+      const segId = randomUUID()
+      await pool.query(
+        `INSERT INTO quote_segments
+         (id, quote_id, city_id, start_date, end_date, lodging_class_id, nights, base_nightly_usd, season_multiplier, subtotal_usd)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          segId,
+          id,
+          ps.segment.city_id,
+          toSqlDate(ps.segment.start_date),
+          toSqlDate(ps.segment.end_date),
+          ps.lodging_class_id,
+          ps.nights,
+          ps.base_nightly_usd,
+          1.00, // Season multiplier (default to 1.00 for now)
+          ps.base_usd
+        ]
+      )
+    }
 
     const quote: Quote = {
       id,

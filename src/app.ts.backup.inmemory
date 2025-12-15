@@ -1,0 +1,228 @@
+import express from 'express'
+import cors from 'cors'
+import morgan from 'morgan'
+import { randomUUID } from 'node:crypto'
+import { lodgingClassSchema, rateRowSchema, fxSnapshotSchema, taxFeeSchema, promoSchema, quoteRequestSchema, optimizeRequestSchema } from './validators.js'
+import type { FXSnapshot, Promo, RateRow, TaxFee, Quote } from './types.js'
+
+const app = express()
+app.use(cors())
+app.use(express.json())
+app.use(morgan('dev'))
+
+// In-memory stores
+const lodgingClasses = new Set(['HOSTEL', 'STANDARD', 'PREMIUM'])
+const rateTable = new Map<string, RateRow>()
+const fxSnaps = new Map<string, FXSnapshot>()
+const taxesFees = new Map<string, TaxFee>()
+const promos = new Map<string, Promo>()
+const quotes = new Map<string, Quote>()
+
+app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'ms-pricing' }))
+
+// Lodging classes
+app.get('/lodging-classes', (_req, res) => res.json(Array.from(lodgingClasses)))
+app.post('/lodging-classes', (req, res) => {
+  const p = lodgingClassSchema.safeParse(req.body)
+  if (!p.success) return res.status(400).json({ error: p.error.flatten() })
+  lodgingClasses.add(p.data.name)
+  res.status(201).json({ name: p.data.name })
+})
+app.put('/lodging-classes/:name', (req, res) => {
+  const oldName = req.params.name
+  if (!lodgingClasses.has(oldName)) return res.status(404).json({ error: 'Not found' })
+  const p = lodgingClassSchema.safeParse(req.body)
+  if (!p.success) return res.status(400).json({ error: p.error.flatten() })
+  lodgingClasses.delete(oldName)
+  lodgingClasses.add(p.data.name)
+  res.json({ name: p.data.name })
+})
+app.delete('/lodging-classes/:name', (req, res) => {
+  const ok = lodgingClasses.delete(req.params.name)
+  if (!ok) return res.status(404).json({ error: 'Not found' })
+  res.status(204).send()
+})
+
+// Rate table
+app.get('/rate-table', (_req, res) => res.json(Array.from(rateTable.values())))
+app.post('/rate-table', (req, res) => {
+  const p = rateRowSchema.safeParse(req.body)
+  if (!p.success) return res.status(400).json({ error: p.error.flatten() })
+  const id = p.data.id ?? randomUUID()
+  const row = { id, ...p.data }
+  rateTable.set(id, row)
+  res.status(201).json(row)
+})
+app.put('/rate-table/:id', (req, res) => {
+  const id = req.params.id
+  if (!rateTable.has(id)) return res.status(404).json({ error: 'Not found' })
+  const p = rateRowSchema.partial({ id: true }).safeParse(req.body)
+  if (!p.success) return res.status(400).json({ error: p.error.flatten() })
+  const updated = { ...rateTable.get(id)!, ...p.data, id }
+  rateTable.set(id, updated)
+  res.json(updated)
+})
+app.delete('/rate-table/:id', (req, res) => {
+  const ok = rateTable.delete(req.params.id)
+  if (!ok) return res.status(404).json({ error: 'Not found' })
+  res.status(204).send()
+})
+
+// FX snapshots
+app.get('/fx-snapshots', (_req, res) => res.json(Array.from(fxSnaps.values())))
+app.post('/fx-snapshots', (req, res) => {
+  const p = fxSnapshotSchema.safeParse(req.body)
+  if (!p.success) return res.status(400).json({ error: p.error.flatten() })
+  const id = p.data.id ?? randomUUID()
+  const row = { id, ...p.data }
+  fxSnaps.set(id, row)
+  res.status(201).json(row)
+})
+app.put('/fx-snapshots/:id', (req, res) => {
+  const id = req.params.id
+  if (!fxSnaps.has(id)) return res.status(404).json({ error: 'Not found' })
+  const p = fxSnapshotSchema.partial({ id: true }).safeParse(req.body)
+  if (!p.success) return res.status(400).json({ error: p.error.flatten() })
+  const updated = { ...fxSnaps.get(id)!, ...p.data, id }
+  fxSnaps.set(id, updated)
+  res.json(updated)
+})
+app.delete('/fx-snapshots/:id', (req, res) => {
+  const ok = fxSnaps.delete(req.params.id)
+  if (!ok) return res.status(404).json({ error: 'Not found' })
+  res.status(204).send()
+})
+
+// Taxes/fees
+app.get('/taxes-fees', (_req, res) => res.json(Array.from(taxesFees.values())))
+app.post('/taxes-fees', (req, res) => {
+  const p = taxFeeSchema.safeParse(req.body)
+  if (!p.success) return res.status(400).json({ error: p.error.flatten() })
+  const id = p.data.id ?? randomUUID()
+  const row = { id, ...p.data }
+  taxesFees.set(id, row)
+  res.status(201).json(row)
+})
+app.put('/taxes-fees/:id', (req, res) => {
+  const id = req.params.id
+  if (!taxesFees.has(id)) return res.status(404).json({ error: 'Not found' })
+  const p = taxFeeSchema.partial({ id: true }).safeParse(req.body)
+  if (!p.success) return res.status(400).json({ error: p.error.flatten() })
+  const updated = { ...taxesFees.get(id)!, ...p.data, id }
+  taxesFees.set(id, updated)
+  res.json(updated)
+})
+app.delete('/taxes-fees/:id', (req, res) => {
+  const ok = taxesFees.delete(req.params.id)
+  if (!ok) return res.status(404).json({ error: 'Not found' })
+  res.status(204).send()
+})
+
+// Promos
+app.get('/promos', (_req, res) => res.json(Array.from(promos.values())))
+app.post('/promos', (req, res) => {
+  const p = promoSchema.safeParse(req.body)
+  if (!p.success) return res.status(400).json({ error: p.error.flatten() })
+  const id = p.data.id ?? randomUUID()
+  const row = { id, ...p.data }
+  promos.set(id, row)
+  res.status(201).json(row)
+})
+app.put('/promos/:id', (req, res) => {
+  const id = req.params.id
+  if (!promos.has(id)) return res.status(404).json({ error: 'Not found' })
+  const p = promoSchema.partial({ id: true }).safeParse(req.body)
+  if (!p.success) return res.status(400).json({ error: p.error.flatten() })
+  const updated = { ...promos.get(id)!, ...p.data, id }
+  promos.set(id, updated)
+  res.json(updated)
+})
+app.delete('/promos/:id', (req, res) => {
+  const ok = promos.delete(req.params.id)
+  if (!ok) return res.status(404).json({ error: 'Not found' })
+  res.status(204).send()
+})
+
+// Quotes
+function nightsBetween(start: string, end: string): number {
+  const s = new Date(start)
+  const e = new Date(end)
+  return Math.max(0, Math.ceil((e.getTime() - s.getTime()) / (1000 * 60 * 60 * 24)))
+}
+
+app.post('/quotes', (req, res) => {
+  const p = quoteRequestSchema.safeParse(req.body)
+  if (!p.success) return res.status(400).json({ error: p.error.flatten() })
+  const { segments, currency, promo_code } = p.data
+
+  // Simple pricing: pick matching rate rows by (city_id, lodging_class), ignore season for now unless provided
+  const per_segment = segments.map((seg) => {
+    const nights = nightsBetween(seg.start_date, seg.end_date)
+    const rate = Array.from(rateTable.values()).find(
+      (r) => r.city_id === seg.city_id && r.lodging_class === seg.lodging_class
+    )
+    const base = rate ? rate.base_nightly_usd * nights : 0
+    return { segment: seg, nights, base_usd: base }
+  })
+  let total_usd = per_segment.reduce((sum, s) => sum + s.base_usd, 0)
+
+  const tf = Array.from(taxesFees.values())
+  tf.forEach((t) => {
+    // naive: apply to all segments in that city
+    per_segment.forEach((ps) => {
+      if (ps.segment.city_id === t.city_id) {
+        total_usd += (t.lodging_tax_pct ?? 0) * ps.base_usd
+        total_usd += t.fixed_fee_usd ?? 0
+      }
+    })
+  })
+
+  let promoUsed
+  if (promo_code) {
+    promoUsed = Array.from(promos.values()).find((p) => p.code === promo_code)
+    if (promoUsed) {
+      if (promoUsed.type === 'percent') total_usd *= 1 - promoUsed.value
+      else total_usd -= promoUsed.value
+      if (total_usd < 0) total_usd = 0
+    }
+  }
+
+  const id = randomUUID()
+  const quote: Quote = {
+    id,
+    currency: currency ?? 'USD',
+    total_usd: Number(total_usd.toFixed(2)),
+    per_segment,
+    fx_used: Array.from(fxSnaps.values()),
+    taxes_fees_applied: tf,
+    promo_code: promoUsed?.code
+  }
+  quotes.set(id, quote)
+  res.status(201).json(quote)
+})
+
+app.get('/quotes/:id/explain', (req, res) => {
+  const q = quotes.get(req.params.id)
+  if (!q) return res.status(404).json({ error: 'Not found' })
+  res.json({
+    quote_id: q.id,
+    total_usd: q.total_usd,
+    per_segment: q.per_segment,
+    fx_used: q.fx_used,
+    taxes_fees_applied: q.taxes_fees_applied,
+    promo_code: q.promo_code,
+    notes: 'Simplified pricing engine for Sprint 1 (no season surge, no FX conversion)'
+  })
+})
+
+// Optimize sequence (toy heuristic: keep order, delta 0)
+app.post('/optimize/sequence', (req, res) => {
+  const p = optimizeRequestSchema.safeParse(req.body)
+  if (!p.success) return res.status(400).json({ error: p.error.flatten() })
+  res.json({ suggested_order: p.data.cities, estimated_delta: 0 })
+})
+
+// 404
+app.use((_req, res) => res.status(404).json({ error: 'Not Found' }))
+
+export default app

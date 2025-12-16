@@ -24,7 +24,6 @@ app.get('/openapi.json', (_req, res) => {
   res.json(openApiSpec)
 })
 
-// Lodging classes
 app.get('/lodging-classes', async (_req, res) => {
   const names = await getAllLodgingClassNames()
   res.json(names)
@@ -79,7 +78,6 @@ app.delete('/lodging-classes/:name', async (req, res) => {
   }
 })
 
-// GET /rates - Query rates by city_id and lodging_class (for TravelPlannerMS compatibility)
 app.get('/rates', async (req, res) => {
   try {
     const { city_id, lodging_class } = req.query
@@ -90,7 +88,7 @@ app.get('/rates', async (req, res) => {
 
     const lodgingClassId = await getLodgingClassId(String(lodging_class).toUpperCase() as any)
     if (!lodgingClassId) {
-      return res.json([]) // Return empty array if lodging class not found
+      return res.json([])
     }
 
     const [rows]: any = await pool.query(`
@@ -553,27 +551,22 @@ async function determineSeasonId(cityId: string, date: string): Promise<string |
 
     const allSeasons = await response.json()
 
-    // Filter seasons for this city
     const citySeasons = allSeasons.filter((s: any) => s.city_id === cityId)
 
     if (citySeasons.length === 0) {
       return null
     }
 
-    // Extract month from date (1-12)
     const month = new Date(date).getMonth() + 1
 
-    // Find matching season based on month range
     for (const season of citySeasons) {
       const { start_month, end_month } = season
 
-      // Handle normal range (e.g., June-August: 6-8)
       if (start_month <= end_month) {
         if (month >= start_month && month <= end_month) {
           return season.id
         }
       }
-      // Handle wraparound (e.g., November-March: 11-3)
       else {
         if (month >= start_month || month <= end_month) {
           return season.id
@@ -581,7 +574,7 @@ async function determineSeasonId(cityId: string, date: string): Promise<string |
       }
     }
 
-    return null // No season found
+    return null
   } catch (error) {
     console.error('Error determining season:', error)
     return null
@@ -601,14 +594,12 @@ app.post('/quotes', async (req, res) => {
         throw new Error(`Invalid lodging_class: ${seg.lodging_class}`)
       }
 
-      // Determine season based on start_date
       const seasonId = await determineSeasonId(seg.city_id, seg.start_date)
 
       let baseNightly = 0
       let actualSeasonId = seasonId
 
       if (seasonId) {
-        // Try to get rate with season filter
         const [rates]: any = await pool.query(
           'SELECT base_nightly_usd, season_id FROM rate_table WHERE city_id = ? AND lodging_class_id = ? AND season_id = ? LIMIT 1',
           [seg.city_id, lodgingClassId, seasonId]
@@ -618,7 +609,6 @@ app.post('/quotes', async (req, res) => {
           baseNightly = toNumber(rates[0].base_nightly_usd, 0)
           actualSeasonId = rates[0].season_id
         } else {
-          // Fallback: query without season filter
           const [fallbackRates]: any = await pool.query(
             'SELECT base_nightly_usd, season_id FROM rate_table WHERE city_id = ? AND lodging_class_id = ? LIMIT 1',
             [seg.city_id, lodgingClassId]
@@ -629,7 +619,6 @@ app.post('/quotes', async (req, res) => {
           }
         }
       } else {
-        // No season found, query without season filter
         const [rates]: any = await pool.query(
           'SELECT base_nightly_usd, season_id FROM rate_table WHERE city_id = ? AND lodging_class_id = ? LIMIT 1',
           [seg.city_id, lodgingClassId]
@@ -697,7 +686,6 @@ app.post('/quotes', async (req, res) => {
       [id, Number(total_usd.toFixed(2)), currency || 'USD', promo_code || null]
     )
 
-    // Store quote segments with season data
     for (const ps of per_segment) {
       const segId = randomUUID()
       await pool.query(
@@ -713,7 +701,7 @@ app.post('/quotes', async (req, res) => {
           ps.lodging_class_id,
           ps.nights,
           ps.base_nightly_usd,
-          1.00, // Season multiplier (default to 1.00 for now)
+          1.00,
           ps.base_usd
         ]
       )

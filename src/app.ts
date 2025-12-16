@@ -14,8 +14,6 @@ app.use(cors())
 app.use(express.json())
 app.use(morgan('dev'))
 
-await initLodgingClassCache()
-
 app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'ms-pricing' }))
 
 const openApiSpec = generateOpenAPISpec()
